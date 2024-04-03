@@ -1,0 +1,557 @@
+---
+title: "Assignment 1"
+output:
+  pdf_document:
+    keep_tex: true
+---
+## Install al lnecessary packages 
+```{r}
+#install.packages("sensemakr")
+#install.packages("ggplot2"), file= nullfile())
+#install.packages("GGally")
+#install.packages("car")
+# Install knitr if you haven't already
+#install.packages("knitr")
+library(knitr)
+install.packages("rgenoud"); library(rgenoud)
+
+```
+
+## Sensitvity Analysis with Darfur
+```{r}
+# loads package
+library(sensemakr)
+
+# loads data
+data("darfur")
+
+head(darfur)
+```
+```{r}
+?darfur
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(car)
+# Fit a linear model with all predictors, excluding the outcome.
+covariate_model <- lm(directlyharmed ~ age + farmer_dar + herder_dar + pastvoted + hhsize_darfur + female + village + gos_soldier_execute + wouldvote + peace_formerenemies, data = darfur)
+
+# Calculate VIF
+covariate_vif_values <- vif(covariate_model)
+
+# View VIF values
+print(covariate_vif_values)
+
+
+```
+
+
+## Propensity score matching: method using regression on treatment variable 
+```{r}
+
+library(ggplot2)
+# Empty code cell for your work (questions below)
+#age	educ	black	hisp	married	nodegr	re74	re75	re78	u74	u75	treat
+reg1 <- glm(directlyharmed ~ female + village, data = darfur, family = "binomial")
+#summary(reg1)
+
+predicted_probabilities <- predict(reg1, type = "response")
+
+#create prop score column
+darfur$prop_score <- predicted_probabilities
+
+#show dataset with new column
+head(darfur)
+
+#create treated and control dfs
+treated <- darfur[darfur$directlyharmed==1,]
+control <- darfur[darfur$directlyharmed==0,]
+
+#count the observations in each
+length(treated[,1])
+length(control[,1])
+
+#create 2 histograms of prop scores
+hist(treated$prop_score, 
+     main = "Histogram Propensity scores of treated units", 
+     xlab = "Propensity scores", 
+     ylab = "Frequency", 
+     col = "red", 
+     border = "black") 
+
+hist(control$prop_score, 
+     main = "Histogram Propensity scores of control units", 
+     xlab = "Propensity scores", 
+     ylab = "Frequency", 
+     col = "blue", 
+     border = "black") 
+
+
+ggplot(darfur, aes(x = prop_score, fill = as.factor(directlyharmed))) +
+  geom_histogram(position = 'identity', alpha = 0.5, bins = 30) +
+  scale_fill_manual(values = c("blue", "red"), labels = c("Control", "Treated")) +
+  labs(x = "Propensity Score", y = "Count", fill = "Group") +
+  theme_minimal() +
+  ggtitle("Overlapping Histograms of Propensity Scores")
+
+
+```
+```{r}
+
+summarymodel <- summary(reg1)
+
+
+p_values <- summarymodel$coefficients[, 4]
+
+# Filter significant p-values (e.g., p < 0.05)
+significant_p_values <- p_values[p_values < 0.05]
+
+# Print or further manipulate significant p-values
+print(significant_p_values)
+```
+
+## Propensity score mathcing using Matchit 
+
+```{r}
+
+# Load the packages
+library(MatchIt)
+library(cobalt)
+
+# Step 1: Estimate Propensity Scores
+# Assuming `df` is your dataframe and `directlyharmed` is your binary treatment variable
+m.out <- matchit(directlyharmed ~  female + village,
+                 data = darfur, method = "nearest", estimand = "ATT")
+
+# Step 2: Perform Matching (this is included in the above command with matchit())
+
+summary(m.out)
+# Step 3: Evaluate Balance
+
+
+```
+## Get treatment effect from the matched data 
+```{r}
+library(MatchIt)
+library(cobalt)
+
+
+model1 <- lm(peacefactor ~  directlyharmed + female + village, data = match.data(m.out))
+
+summary(model1)
+
+```
+## Run sensitivity analysis 
+```{r}
+library(sensemakr)
+darfur.sensitivity <- sensemakr(model = model1, 
+                                treatment = "directlyharmed",
+                                benchmark_covariates = "female",
+                                kd = 1:3)
+
+darfur.sensitivity
+
+ovb_minimal_reporting(darfur.sensitivity, format = "html")
+```
+##Plot Senstivity graphs
+```{r}
+plot(darfur.sensitivity, main = "Sensitivity contour plots on point estimates")
+
+plot(darfur.sensitivity, sensitivity.of = "t-value",main = "Sensitivity contour plots of t-value")
+
+plot(darfur.sensitivity, type = "extreme",main= "Sensitivity plots of extreme scenarios")
+
+```
+##GenMatch 1
+```{r}
+
+library(rgenoud)
+library(Matching)
+
+X = cbind(darfur$female, darfur$village)
+
+#The covariates we want to obtain balance on
+
+BalanceMat <- cbind(darfur$female, darfur$village)
+
+
+#Lets call GenMatch() to find the optimal weight to give each
+#covariate in X so as we have achieved balance on the covariates in BalanceMat. This is only an example so we want GenMatch to be quick so the population size has been set to be only 16 via the pop.size option. This is *WAY* too small for actual problems.
+#For details see http://sekhon.berkeley.edu/papers/MatchingJSS.pdf.
+
+genout <- GenMatch(Tr=darfur$directlyharmed , X=X, BalanceMatrix=BalanceMat, estimand="ATT", M=1, pop.size = 100, max.generations=10, wait.generations=5, caliper = c(1000, 0), print.level = 0)
+
+# Now that GenMatch() has found the optimal weights, lets estimate our causal effect of interest using those weights
+
+mout <- Match(Tr=darfur$directlyharmed, X=X, estimand="ATT", caliper = c(1000, 0),  Weight.matrix=genout)
+summary(mout)
+
+#Lets determine if balance has actually been obtained on the variables of interest
+mb <- MatchBalance(darfur$directlyharmed ~ darfur$female + darfur$village , match.out=mout, nboots=500)
+
+```
+##Get treatment effect 
+```{r}
+mout <- Match(Y = darfur$peacefactor, Tr=darfur$directlyharmed, X=X, estimand="ATT", caliper = c(1000, 0),  Weight.matrix=genout)
+summary(mout)
+
+```
+
+```{r}
+Y = darfur$peacefactor
+x = darfur 
+
+X_matched <- rbind(x[mout$index.treated,], x[mout$index.control,])
+Y_matched <- c(Y[mout$index.treated], Y[mout$index.control])
+matched_weights <- c(mout$weights, mout$weights)
+
+lm2 <-lm(Y_matched ~ directlyharmed+female+village,
+         data = X_matched, weights = matched_weights)
+summary(lm2)
+
+
+```
+```{r}
+library(sensemakr)
+darfur.sensitivity2 <- sensemakr(model = lm2,
+                                treatment = "directlyharmed",
+                                benchmark_covariates = "female",
+                                kd = 1:3,
+                                ky = 1:3,
+                                q = 1,
+                                reduce = TRUE)
+
+darfur.sensitivity2
+
+plot(darfur.sensitivity2,main = "Sensitivity contour plots of point estimates")
+plot(darfur.sensitivity2, sensitivity.of = "t-value", main = "Sensitivity contour plots of t-value")
+plot(darfur.sensitivity2, type = "extreme",main= "Sensitivity plots of extreme scenarios")
+
+ovb_minimal_reporting(darfur.sensitivity, format = "html")
+
+
+```
+
+
+
+##Genetic Algorithm with more confounders 
+##Run gen match and get match balance 
+```{r}
+library(rgenoud)
+library(Matching)
+
+X2 = cbind(darfur$female, darfur$village, darfur$age, darfur$hhsize_darfur, darfur$farmer_dar, darfur$herder_dar)
+
+#The covariates we want to obtain balance on
+
+BalanceMat2 <- cbind(darfur$female, darfur$village, darfur$age, darfur$hhsize_darfur, darfur$farmer_dar, darfur$herder_dar, I(darfur$age*darfur$hhsize_darfur))
+
+
+
+genout2 <- GenMatch(Tr=darfur$directlyharmed , X=X2, BalanceMatrix=BalanceMat2, estimand="ATT", M=1, pop.size = 100, max.generations=10, wait.generations=5, caliper = c(1000, 0, 1000, 1000, 1000, 1000), print.level = 0)
+
+# Now that GenMatch() has found the optimal weights, lets estimate our causal effect of interest using those weights
+
+mout2 <- Match(Tr=darfur$directlyharmed, X=X2, estimand="ATT", caliper = c(1000, 0, 1000, 1000, 1000, 1000),  Weight.matrix=genout2)
+summary(mout2)
+
+#Lets determine if balance has actually been obtained on the variables of interest
+mb2 <- MatchBalance(darfur$directlyharmed ~ darfur$female + darfur$village + darfur$age + darfur$hhsize_darfur + darfur$farmer_dar + darfur$herder_dar + I(darfur$age*darfur$hhsize_darfur), match.out=mout2, nboots=1000)
+
+mb2
+
+```
+
+##Do Matching with weight matrix
+```{r}
+library(Matching)
+
+mout2 <- Match(Y=darfur$peacefactor, Tr=darfur$directlyharmed, X=X2, estimand="ATT", caliper = c(1000, 0, 1000, 1000, 1000, 1000),  Weight.matrix=genout2)
+summary(mout2)
+```
+## Run lm with the matched data
+```{r}
+Y = darfur$peacefactor
+x = darfur 
+
+X_matched2 <- rbind(x[mout2$index.treated,], x[mout2$index.control,])
+Y_matched2 <- c(Y[mout2$index.treated], Y[mout2$index.control])
+matched_weights2 <- c(mout2$weights, mout2$weights)
+
+lm3 <-lm(Y_matched2 ~ directlyharmed+female+village+age+hhsize_darfur+farmer_dar+herder_dar+age*hhsize_darfur,
+         data = X_matched2, weights = matched_weights2)
+summary(lm3)
+```
+##Do sensemkr with linear model
+```{r}
+library(sensemakr)
+
+darfur.sensitivity3 <- sensemakr(model = lm3,
+                                treatment = "directlyharmed",
+                                benchmark_covariates = "female",
+                                kd = 1:3,
+                                ky = 1:3,
+                                q = 1,
+                                reduce = TRUE)
+
+darfur.sensitivity3
+
+plot(darfur.sensitivity3,main = "Sensitivity contour plots of point estimates")
+plot(darfur.sensitivity3, sensitivity.of = "t-value", main = "Sensitivity contour plots of t-value")
+plot(darfur.sensitivity3, type = "extreme",main= "Sensitivity plots of extreme scenarios")
+
+ovb_minimal_reporting(darfur.sensitivity3, format = "html")
+
+```
+
+## Synthetic Control 
+```{r}
+library(Synth)
+library(dplyr)
+data(basque)
+
+basque_find <- basque %>% filter(regionname== c("Baleares (Islas)"))
+
+basque
+    
+```
+
+
+```{r}
+#
+# Cantabria = 7
+#Balearsa = 5
+library(ggplot2)
+
+# dataprep: prepare data for synth
+dataprep.out <-
+  dataprep(
+  foo = basque
+  ,predictors= c("school.illit",
+                 "school.prim",
+                 "school.med",
+                 "school.high",
+                 "school.post.high"
+                 ,"invest"
+                 ) #1964-69
+   ,predictors.op = c("mean")
+   ,dependent     = c("gdpcap")
+   ,unit.variable = c("regionno")
+   ,time.variable = c("year")
+   ,special.predictors = list(
+    list("gdpcap",1960:1969,c("mean")),                            
+    list("sec.agriculture",seq(1961,1969,2),c("mean")),
+    list("sec.energy",seq(1961,1969,2),c("mean")),
+    list("sec.industry",seq(1961,1969,2),c("mean")),
+    list("sec.construction",seq(1961,1969,2),c("mean")),
+    list("sec.services.venta",seq(1961,1969,2),c("mean")),
+    list("sec.services.nonventa",seq(1961,1969,2),c("mean")),
+    list("popdens",1969,c("mean"))) #special time ranges
+    ,treatment.identifier  = 5
+    ,controls.identifier   = c(2:4,6:16,18)
+    ,time.predictors.prior = c(1964:1969) #what we ave over the balance table of covariates
+    ,time.optimize.ssr     = c(1960:1969) #pre-treatment time
+    ,unit.names.variable   = c("regionname")
+    ,time.plot            = c(1955:1997) 
+    )
+
+# 1. combine highest and second highest 
+# schooling category and eliminate highest category
+dataprep.out$X1["school.high",] <- 
+ dataprep.out$X1["school.high",] + 
+ dataprep.out$X1["school.post.high",]
+dataprep.out$X1                 <- 
+ as.matrix(dataprep.out$X1[
+  -which(rownames(dataprep.out$X1)=="school.post.high"),])
+dataprep.out$X0["school.high",] <- 
+ dataprep.out$X0["school.high",] + 
+ dataprep.out$X0["school.post.high",]
+dataprep.out$X0                 <- 
+dataprep.out$X0[
+ -which(rownames(dataprep.out$X0)=="school.post.high"),]
+
+# 2. make total and compute shares for the schooling catgeories
+lowest  <- which(rownames(dataprep.out$X0)=="school.illit")
+highest <- which(rownames(dataprep.out$X0)=="school.high")
+
+dataprep.out$X1[lowest:highest,] <- 
+ (100 * dataprep.out$X1[lowest:highest,]) /
+ sum(dataprep.out$X1[lowest:highest,])
+dataprep.out$X0[lowest:highest,] <-  
+ 100 * scale(dataprep.out$X0[lowest:highest,],
+             center=FALSE,
+             scale=colSums(dataprep.out$X0[lowest:highest,])
+                                                 )
+    
+# run synth
+synth.out <- synth(data.prep.obj = dataprep.out)
+
+# Get result tables
+synth.tables <- synth.tab(
+                          dataprep.res = dataprep.out,
+                          synth.res = synth.out
+                          ) 
+
+# results tables:
+print(synth.tables)
+
+# plot results:
+# path
+path.plot(synth.res = synth.out,
+          dataprep.res = dataprep.out,
+          Ylab = c("real per-capita GDP (1986 USD, thousand)"),
+          Xlab = c("year"), 
+          Ylim = c(0,13), 
+          Legend = c(" Baleares (Islas)","synthetic  Baleares (Islas)")
+          ) 
+abline(v = 1970, col = "red", lty = 2)
+text(x = 1970, y = 10, labels = "Treatment Year", pos = 4, col = "red")
+
+## gaps
+gaps.plot(synth.res = synth.out,
+          dataprep.res = dataprep.out, 
+          Ylab = c("gap in real per-capita GDP (1986 USD, thousand)"),
+          Xlab = c("year"), 
+          Ylim = c(-1.5,1.5) 
+          )
+
+abline(v = 1970, col = "red", lty = 2)
+text(x = 1970, y = 1.3, labels = "Treatment Start", pos = 4, col = "red")
+
+```
+```{r}
+print(synth.tables)
+```
+## Treatment effect 
+```{r}
+gaps <- dataprep.out$Y1plot - (dataprep.out$Y0plot %*% synth.out$solution.w)
+
+# Post-intervention intervention gaps (1996 onwards)
+ca_gaps <- gaps[rownames(gaps) >= "1970", ]
+treatment_effect_df <- data.frame(
+  year = 1971:1997,
+  effect = as.vector(ca_gaps[1:27])
+)
+
+# ATT
+att <- mean(treatment_effect_df$effect)
+cat("\n\nAverage Treatment Effect on Treated Baleares (ATT):", round(att, 6), "\n")
+
+
+
+```
+```{r}
+# Assuming 'countries' is a vector of the country IDs you want to analyze
+countries <- 2:18
+
+# Initialize a vector to store MSPE ratios
+mspe_ratios <- numeric(length(countries))
+names(mspe_ratios) <- as.character(countries)  # Ensure names are character for better readability
+
+for (country_id in countries) {
+ {
+    current_data <- basque
+    
+    treatment_year <- 1970 
+    pre_treatment_indices <- 1964:1969
+    post_treatment_indices <- 1970:1997
+    
+    # Run dataprep and synth functions for current_data
+     capture.output(
+                  dataprep.out <-dataprep(
+                          foo = basque
+                          ,predictors= c("school.illit",
+                                         "school.prim",
+                                         "school.med",
+                                         "school.high",
+                                         "school.post.high"
+                                         ,"invest"
+                                         ) #1964-69
+                           ,predictors.op = c("mean")
+                           ,dependent     = c("gdpcap")
+                           ,unit.variable = c("regionno")
+                           ,time.variable = c("year")
+                           ,special.predictors = list(
+                            list("gdpcap",1960:1969,c("mean")),                            
+                            list("sec.agriculture",seq(1961,1969,2),c("mean")),
+                            list("sec.energy",seq(1961,1969,2),c("mean")),
+                            list("sec.industry",seq(1961,1969,2),c("mean")),
+                            list("sec.construction",seq(1961,1969,2),c("mean")),
+                            list("sec.services.venta",seq(1961,1969,2),c("mean")),
+                            list("sec.services.nonventa",seq(1961,1969,2),c("mean")),
+                            list("popdens",1969,c("mean"))) #special time ranges
+                            ,treatment.identifier  = country_id
+                            ,controls.identifier = setdiff(countries, country_id),
+                            ,time.predictors.prior =  pre_treatment_indices
+                            ,time.optimize.ssr     = pre_treatment_indices
+                            ,unit.names.variable   = c("regionname")
+                            ,time.plot            = post_treatment_indices
+                            ) , file = nullfile())
+    
+                            # schooling category and eliminate highest category
+                            dataprep.out$X1["school.high",] <- 
+                             dataprep.out$X1["school.high",] + 
+                             dataprep.out$X1["school.post.high",]
+                            dataprep.out$X1                 <- 
+                             as.matrix(dataprep.out$X1[
+                              -which(rownames(dataprep.out$X1)=="school.post.high"),])
+                            dataprep.out$X0["school.high",] <- 
+                             dataprep.out$X0["school.high",] + 
+                             dataprep.out$X0["school.post.high",]
+                            dataprep.out$X0                 <- 
+                            dataprep.out$X0[
+                             -which(rownames(dataprep.out$X0)=="school.post.high"),]
+                            
+                            # 2. make total and compute shares for the schooling catgeories
+                            lowest  <- which(rownames(dataprep.out$X0)=="school.illit")
+                            highest <- which(rownames(dataprep.out$X0)=="school.high")
+                            
+                            dataprep.out$X1[lowest:highest,] <- 
+                             (100 * dataprep.out$X1[lowest:highest,]) /
+                             sum(dataprep.out$X1[lowest:highest,])
+                            dataprep.out$X0[lowest:highest,] <-  
+                             100 * scale(dataprep.out$X0[lowest:highest,],
+                                         center=FALSE,
+                                         scale=colSums(dataprep.out$X0[lowest:highest,])
+                                                                             )
+
+    capture.output(
+        synth.out <- synth(data.prep.obj = dataprep.out), 
+        file=nullfile()
+        )
+    
+    # Calculate gaps, MSPE for pre-treatment and post-treatment, and MSPE ratio
+    gaps <- dataprep.out$Y1plot - (dataprep.out$Y0plot %*% synth.out$solution.w)
+    mspepost <- mean((gaps[rownames(gaps) >= "1970", ])^2)
+    mspepre <- mean((gaps[rownames(gaps) < "1970", ])^2)
+    mspe_ratios[as.character(country_id)] <- mspepost / mspepre
+  }
+}
+
+# Print MSPE ratios
+print(mspe_ratios)
+
+```
+
+```{r}
+# Extract 's MSPE ratio
+bal_mspe_ratio <- mspe_ratios[5]
+# Count how many MSPE ratios are greater than Ireland's
+num_greater_than_bal <- sum(mspe_ratios >= bal_mspe_ratio) / length(mspe_ratios)
+
+# Print the result
+num_greater_than_bal
+
+hist(mspe_ratios,
+     main = "Histogram of MSPE Ratios",
+     xlab = "MSPE Ratio",
+     ylab = "Frequency",
+     col = "blue",
+     border = "black")
+abline(v=bal_mspe_ratio, col = "red", lwd = 2, lty = 2)
+
+```
+
